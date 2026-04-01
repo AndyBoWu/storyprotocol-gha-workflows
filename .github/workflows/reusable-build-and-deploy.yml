@@ -1,0 +1,157 @@
+name: Build container image and update deployment config
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Application name (used in commit messages and defaults)"
+        required: true
+        type: string
+      image_name:
+        description: "Container image name in registry (defaults to app_name)"
+        required: false
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "./Dockerfile"
+      dockerfile_context:
+        description: "Docker build context"
+        required: false
+        type: string
+        default: "."
+      aws_region:
+        description: "AWS region for ECR"
+        required: false
+        type: string
+        default: "us-east-1"
+      deploy_repo:
+        description: "Deployment config repository (org/repo)"
+        required: false
+        type: string
+        default: "storyprotocol/story-deployments"
+      deploy_ref:
+        description: "Branch of deployment config repository"
+        required: false
+        type: string
+        default: "main"
+      deploy_paths:
+        description: "Newline-separated list of helm chart paths to update (e.g. staking-aeneid/staking-api-aeneid)"
+        required: true
+        type: string
+      deploy_env:
+        description: "Target environment suffix for values file (stage or prod)"
+        required: true
+        type: string
+      image_tag:
+        description: "Image tag (defaults to github.sha)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      AWS_ROLE_ARN:
+        description: "IAM role ARN for OIDC (ECR push)"
+        required: true
+      DEPLOY_TOKEN:
+        description: "GitHub token with write access to deploy_repo"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_name: ${{ steps.meta.outputs.image_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+          INPUT_NAME: ${{ inputs.image_name }}
+          APP_NAME: ${{ inputs.app_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          TAG="${INPUT_TAG:-$SHA}"
+          NAME="${INPUT_NAME:-$APP_NAME}"
+          echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "image_name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_NAME: ${{ steps.meta.outputs.image_name }}
+          IMAGE_TAG: ${{ steps.meta.outputs.image_tag }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          CONTEXT: ${{ inputs.dockerfile_context }}
+        run: |
+          IMAGE="$REGISTRY/$IMAGE_NAME"
+          docker build -f "$DOCKERFILE" \
+            -t "$IMAGE:$IMAGE_TAG" \
+            -t "$IMAGE:latest" \
+            "$CONTEXT"
+          docker push "$IMAGE:$IMAGE_TAG"
+          docker push "$IMAGE:latest"
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout deployment repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.deploy_repo }}
+          ref: ${{ inputs.deploy_ref }}
+          token: ${{ secrets.DEPLOY_TOKEN }}
+
+      - name: Install yq
+        uses: mikefarah/yq@v4.52.5
+
+      - name: Update image tags
+        env:
+          DEPLOY_PATHS: ${{ inputs.deploy_paths }}
+          DEPLOY_ENV: ${{ inputs.deploy_env }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            FILE="${path}/use1-${DEPLOY_ENV}.yaml"
+            if [ -f "$FILE" ]; then
+              yq -i ".image.tag = \"${IMAGE_TAG}\"" "$FILE"
+              echo "Updated: $FILE"
+            else
+              echo "WARNING: $FILE not found, skipping"
+            fi
+          done <<< "$DEPLOY_PATHS"
+
+      - name: Commit and push
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          GIT_AUTHOR: ${{ github.actor }}
+        run: |
+          git config --global user.name "$GIT_AUTHOR"
+          git config --global user.email "${GIT_AUTHOR}@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to commit"
+          else
+            git commit -am "${APP_NAME}: update image tag to ${IMAGE_TAG}"
+            git push
+          fi
