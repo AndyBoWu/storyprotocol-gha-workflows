@@ -1,5 +1,11 @@
 # Reusable GitHub Action Workflows
 
+[![Workflow Lint](https://img.shields.io/github/actions/workflow/status/storyprotocol/gha-workflows/lint-validation.yml?branch=main&label=workflow%20lint)](https://github.com/storyprotocol/gha-workflows/actions/workflows/lint-validation.yml)
+[![Secrets Scan](https://img.shields.io/github/actions/workflow/status/storyprotocol/gha-workflows/secrets-scanning.yml?branch=main&label=secrets%20scan)](https://github.com/storyprotocol/gha-workflows/actions/workflows/secrets-scanning.yml)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](.pre-commit-config.yaml)
+[![Stars](https://img.shields.io/github/stars/storyprotocol/gha-workflows?style=flat&label=stars)](https://github.com/storyprotocol/gha-workflows/stargazers)
+[![Forks](https://img.shields.io/github/forks/storyprotocol/gha-workflows?style=flat&label=forks)](https://github.com/storyprotocol/gha-workflows/forks)
+
 This repository contains reusable GitHub Actions workflows used across Story
 Protocol repositories, plus a small set of workflows that maintain this
 repository itself.
